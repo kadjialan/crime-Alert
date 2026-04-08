@@ -8,11 +8,15 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
+  Image,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config/api';
 import { getGPSLocation, reverseGeocode } from '../utils/location';
 import MapPreview from '../components/MapPreview';
+
+const MAX_IMAGES = 4;
 
 const CRIME_TYPES = [
   { key: 'theft', label: 'Theft', icon: '🔓' },
@@ -42,6 +46,48 @@ export default function ReportCrimeScreen({ navigation }) {
   const [location, setLocation] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [fetchingLocation, setFetchingLocation] = useState(true);
+  const [images, setImages] = useState([]); // array of base64 data URIs
+
+  async function pickImage() {
+    if (images.length >= MAX_IMAGES) {
+      return Alert.alert('Limit reached', `You can attach up to ${MAX_IMAGES} images.`);
+    }
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      return Alert.alert('Permission required', 'Photo library access is needed to attach images.');
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.5,
+      base64: true,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    const asset = result.assets[0];
+    const dataUri = `data:image/jpeg;base64,${asset.base64}`;
+    setImages((prev) => [...prev, dataUri]);
+  }
+
+  async function takePhoto() {
+    if (images.length >= MAX_IMAGES) {
+      return Alert.alert('Limit reached', `You can attach up to ${MAX_IMAGES} images.`);
+    }
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      return Alert.alert('Permission required', 'Camera access is needed to take photos.');
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      quality: 0.5,
+      base64: true,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    const asset = result.assets[0];
+    const dataUri = `data:image/jpeg;base64,${asset.base64}`;
+    setImages((prev) => [...prev, dataUri]);
+  }
+
+  function removeImage(index) {
+    setImages((prev) => prev.filter((_, i) => i !== index));
+  }
 
   useEffect(() => {
     (async () => {
@@ -59,38 +105,100 @@ export default function ReportCrimeScreen({ navigation }) {
   }, []);
 
   async function handleSubmit() {
-    if (!title.trim()) return Alert.alert('Error', 'Please enter a title.');
-    if (!type) return Alert.alert('Error', 'Please select a crime type.');
-    if (!description.trim()) return Alert.alert('Error', 'Please enter a description.');
-    if (!location) return Alert.alert('Error', 'Location is required. Please enable location services.');
+    // Collect ALL validation errors up front so the user sees every
+    // missing/invalid field in a single alert instead of fixing them
+    // one popup at a time.
+    const errors = [];
+    if (!title.trim()) {
+      errors.push('• Title is required');
+    } else if (title.trim().length < 3) {
+      errors.push('• Title must be at least 3 characters');
+    }
+    if (!type) {
+      errors.push('• Crime type must be selected');
+    }
+    if (!description.trim()) {
+      errors.push('• Description is required');
+    } else if (description.trim().length < 10) {
+      errors.push('• Description must be at least 10 characters');
+    }
+    if (!location) {
+      errors.push('• Location is required (enable GPS / location services)');
+    }
+
+    if (errors.length > 0) {
+      Alert.alert(
+        'Missing or invalid fields',
+        `Please fix the following before submitting:\n\n${errors.join('\n')}`
+      );
+      return;
+    }
 
     setSubmitting(true);
     try {
-      const res = await fetch(`${API_URL}/crimes`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          title: title.trim(),
-          description: description.trim(),
-          type,
-          severity,
-          latitude: location.latitude,
-          longitude: location.longitude,
-          address: fullAddress || address,
-          isEmergency: severity === 'critical',
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message);
+      let res;
+      try {
+        res = await fetch(`${API_URL}/crimes`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            title: title.trim(),
+            description: description.trim(),
+            type,
+            severity,
+            latitude: location.latitude,
+            longitude: location.longitude,
+            address: fullAddress || address,
+            isEmergency: severity === 'critical',
+            images,
+          }),
+        });
+      } catch {
+        // fetch threw → network/connectivity issue
+        Alert.alert(
+          'Network error',
+          'Could not reach the server. Please check your internet connection and try again.'
+        );
+        return;
+      }
 
-      Alert.alert('Success', 'Crime report submitted. Nearby users have been notified.', [
-        { text: 'OK', onPress: () => navigation.goBack() },
-      ]);
-    } catch (err) {
-      Alert.alert('Error', err.message);
+      let data = null;
+      try {
+        data = await res.json();
+      } catch {
+        // Non-JSON response (e.g. HTML 500 page)
+      }
+
+      if (res.status === 401) {
+        Alert.alert('Session expired', 'Please log in again to submit reports.');
+        return;
+      }
+
+      if (res.status === 413) {
+        Alert.alert(
+          'Images too large',
+          'Your attached photos exceed the upload limit. Please remove some images and try again.'
+        );
+        return;
+      }
+
+      if (!res.ok) {
+        Alert.alert(
+          'Submission failed',
+          (data && data.message) || `Server returned status ${res.status}. Please try again.`
+        );
+        return;
+      }
+
+      // Success — navigate back to Home immediately. Doing this *before*
+      // showing the alert avoids a bug where the Alert callback is
+      // dropped on some platforms (Android/Expo) and the user gets stuck
+      // on the report screen even though the POST succeeded.
+      navigation.navigate('MainTabs', { screen: 'Home' });
+      Alert.alert('Success', 'Crime report submitted. Nearby users have been notified.');
     } finally {
       setSubmitting(false);
     }
@@ -185,6 +293,37 @@ export default function ReportCrimeScreen({ navigation }) {
         </Text>
       )}
 
+      {/* Photos */}
+      <Text style={styles.label}>Photos (optional)</Text>
+      <Text style={styles.helperText}>
+        Attach up to {MAX_IMAGES} images as evidence.
+      </Text>
+      <View style={styles.imageRow}>
+        {images.map((uri, index) => (
+          <View key={index} style={styles.imageWrap}>
+            <Image source={{ uri }} style={styles.imageThumb} />
+            <TouchableOpacity
+              style={styles.imageRemove}
+              onPress={() => removeImage(index)}
+            >
+              <Text style={styles.imageRemoveText}>×</Text>
+            </TouchableOpacity>
+          </View>
+        ))}
+        {images.length < MAX_IMAGES && (
+          <>
+            <TouchableOpacity style={styles.imageAdd} onPress={pickImage}>
+              <Text style={styles.imageAddIcon}>🖼️</Text>
+              <Text style={styles.imageAddLabel}>Gallery</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.imageAdd} onPress={takePhoto}>
+              <Text style={styles.imageAddIcon}>📷</Text>
+              <Text style={styles.imageAddLabel}>Camera</Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </View>
+
       {/* Submit */}
       <TouchableOpacity
         style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
@@ -251,6 +390,41 @@ const styles = StyleSheet.create({
   },
   locationLoadingText: { fontSize: 14, color: '#94A3B8' },
   locationError: { fontSize: 14, color: '#F87171', marginTop: 4 },
+  helperText: { fontSize: 12, color: '#64748B', marginTop: -4, marginBottom: 8 },
+  imageRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  imageWrap: { position: 'relative' },
+  imageThumb: {
+    width: 80,
+    height: 80,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  imageRemove: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    backgroundColor: '#DC2626',
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  imageRemoveText: { color: '#fff', fontSize: 16, fontWeight: '700', lineHeight: 18 },
+  imageAdd: {
+    width: 80,
+    height: 80,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: '#475569',
+    backgroundColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  imageAddIcon: { fontSize: 22 },
+  imageAddLabel: { fontSize: 11, color: '#94A3B8', marginTop: 4, fontWeight: '600' },
   submitBtn: {
     backgroundColor: '#DC2626',
     borderRadius: 14,

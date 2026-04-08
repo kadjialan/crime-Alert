@@ -1,14 +1,51 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Animated } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity } from 'react-native';
 import { io } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
-import { SOCKET_URL } from '../config/api';
+import { API_URL, SOCKET_URL } from '../config/api';
 
 export default function AlertsScreen() {
-  const { token } = useAuth();
+  const { token, logout } = useAuth();
   const [alerts, setAlerts] = useState([]);
   const [connected, setConnected] = useState(false);
   const socketRef = useRef(null);
+
+  // Seed the alerts list with recent crimes from the backend so the screen
+  // isn't blank on first open. Without this, the list only fills as new
+  // socket events arrive in real time.
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_URL}/crimes?limit=20`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.status === 401) {
+          await logout();
+          return;
+        }
+        const data = await res.json();
+        const list = data.crimes || data || [];
+        if (cancelled) return;
+        const seeded = list.map((c) => ({
+          id: `seed-${c._id}`,
+          crime: c,
+          message: c.isEmergency
+            ? `EMERGENCY: ${c.title}`
+            : `Crime Alert: ${c.title}`,
+          receivedAt: c.createdAt,
+          type: c.isEmergency ? 'emergency' : 'crime',
+        }));
+        setAlerts(seeded);
+      } catch {
+        // ignore — socket events will still populate the list
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, logout]);
 
   useEffect(() => {
     if (!token) return;

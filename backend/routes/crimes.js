@@ -16,8 +16,17 @@ function nearbyWhere(lat, lon, radiusMeters) {
 // Report a crime
 router.post('/', auth, async (req, res) => {
   try {
-    const { title, description, type, severity, latitude, longitude, address, isEmergency } =
-      req.body;
+    const {
+      title,
+      description,
+      type,
+      severity,
+      latitude,
+      longitude,
+      address,
+      isEmergency,
+      images,
+    } = req.body;
 
     const crime = await Crime.create({
       title,
@@ -29,6 +38,7 @@ router.post('/', auth, async (req, res) => {
       address,
       reportedBy: req.user.id,
       isEmergency,
+      images: Array.isArray(images) ? images : [],
     });
 
     const crimeWithReporter = await Crime.findByPk(crime.id, {
@@ -104,6 +114,7 @@ router.get('/nearby', auth, async (req, res) => {
       location: { coordinates: [c.longitude, c.latitude], address: c.address },
       reportedBy: c.reporter,
       status: c.status,
+      images: c.images || [],
       createdAt: c.createdAt,
     }));
 
@@ -136,6 +147,7 @@ router.get('/', auth, async (req, res) => {
       location: { coordinates: [c.longitude, c.latitude], address: c.address },
       reportedBy: c.reporter,
       status: c.status,
+      images: c.images || [],
       createdAt: c.createdAt,
     }));
 

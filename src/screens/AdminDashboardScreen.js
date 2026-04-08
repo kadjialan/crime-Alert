@@ -12,7 +12,7 @@ import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config/api';
 
 export default function AdminDashboardScreen({ navigation }) {
-  const { token } = useAuth();
+  const { token, logout } = useAuth();
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -22,6 +22,11 @@ export default function AdminDashboardScreen({ navigation }) {
       const res = await fetch(`${API_URL}/admin/stats`, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (res.status === 401) {
+        // Token expired or invalid — sign out so the user lands on Login.
+        await logout();
+        return;
+      }
       const data = await res.json();
       if (res.ok) setStats(data);
     } catch {
@@ -30,7 +35,7 @@ export default function AdminDashboardScreen({ navigation }) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [token]);
+  }, [token, logout]);
 
   useEffect(() => {
     fetchStats();

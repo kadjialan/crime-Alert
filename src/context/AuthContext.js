@@ -18,8 +18,32 @@ export function AuthProvider({ children }) {
       const storedToken = await AsyncStorage.getItem('token');
       const storedUser = await AsyncStorage.getItem('user');
       if (storedToken && storedUser) {
-        setToken(storedToken);
-        setUser(JSON.parse(storedUser));
+        // Validate the token against the backend before trusting it.
+        // If the secret rotated or the token expired, clear it so the
+        // user is redirected to the Login screen instead of seeing
+        // "Invalid or expired token" errors throughout the app.
+        try {
+          const res = await fetch(`${API_URL}/auth/me`, {
+            headers: { Authorization: `Bearer ${storedToken}` },
+          });
+          if (res.ok) {
+            setToken(storedToken);
+            setUser(JSON.parse(storedUser));
+          } else if (res.status === 401) {
+            await AsyncStorage.removeItem('token');
+            await AsyncStorage.removeItem('user');
+          } else {
+            // Server reachable but unexpected status — keep stored auth
+            // so the user isn't logged out due to a transient error.
+            setToken(storedToken);
+            setUser(JSON.parse(storedUser));
+          }
+        } catch {
+          // Network error (backend down) — keep stored auth so the
+          // app still works offline-ish; individual screens will retry.
+          setToken(storedToken);
+          setUser(JSON.parse(storedUser));
+        }
       }
     } catch {
       // ignore storage errors

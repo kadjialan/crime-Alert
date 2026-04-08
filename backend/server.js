@@ -19,7 +19,9 @@ const io = new Server(server, {
 
 app.set('io', io);
 app.use(cors());
-app.use(express.json());
+// Bumped from the default 100kb to accommodate base64-encoded image
+// uploads attached to crime reports.
+app.use(express.json({ limit: '15mb' }));
 
 // Routes
 app.use('/api/auth', authRoutes);
